@@ -1,0 +1,43 @@
+# CI runs the same mise tasks as local development (`mise run check`);
+# tool versions come from mise.toml via jdx/mise-action.
+# https://mise.jdx.dev/continuous-integration.html
+
+name: Go
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: mise run check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # mise-action v4 runs on the Node.js 24 Actions runtime.
+      - uses: jdx/mise-action@v4
+        with:
+          version: 2026.6.1
+
+      - name: mise run check
+        run: mise run check
+
+  race:
+    name: race detector
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: jdx/mise-action@v4
+        with:
+          version: 2026.6.1
+
+      - name: mise run test-race
+        run: mise run test-race
+
