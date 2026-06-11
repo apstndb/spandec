@@ -1,3 +1,6 @@
+// Deprecated: spandec was merged into github.com/apstndb/spancodec before
+// its first release; use spancodec (the Decode/ToStruct API is unchanged
+// there).
 module github.com/apstndb/spandec
 
 go 1.25.0
