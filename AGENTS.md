@@ -22,6 +22,17 @@ retire the extension for that version. ToStruct mirrors client strictness
 (unmatched column / duplicate column = error; exact then case-insensitive
 matching via fields.List.Match).
 
+## Custom value decoders (#1)
+
+`Decode`/`ToStruct` take variadic `DecodeOption`. `WithValueDecoder[T]`
+registers `func(GCV, *T) error` for exact destination type `*T` (interface T
+panics), consulted BEFORE `decodeExtended` and the client — so it can also
+override the extension shapes. `ErrFallthrough` defers to the built-in path;
+last registration wins; NO package-global registry. ARRAY into `*[]T` with a
+registered `T` decodes per element (NULL ARRAY → nil slice), each element
+re-entering `decode` so per-element fallthrough works. Counterpart:
+spanenc `WithValueEncoder` (apstndb/spanenc#5).
+
 ## Commands
 
 `mise.toml` owns tasks/tools; prefer `mise run check`; Makefile delegates.

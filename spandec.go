@@ -14,6 +14,14 @@
 // identical where the client already works. Struct field listing uses
 // [github.com/apstndb/structfields/spannertag], the exported port of the
 // client's `spanner` tag semantics.
+//
+// Destination types outside the client's coverage (uint32 and the other
+// integer width variants, [time.Duration], external types that cannot
+// implement [cloud.google.com/go/spanner.Decoder]) can be supported per call
+// with [WithValueDecoder]; registered decoders run before the built-in
+// decoding and may return [ErrFallthrough] to defer to it. There is
+// deliberately no package-global registry; injection is per call, mirroring
+// spanenc's WithValueEncoder on the encode side.
 package spandec
 
 import (
@@ -43,11 +51,62 @@ var (
 // Decode decodes a [spanner.GenericColumnValue] into ptr. Destinations the
 // client supports are delegated to the client's Decode unchanged; the
 // extension shapes listed in the package documentation are handled here.
-func Decode(gcv spanner.GenericColumnValue, ptr any) error {
+// Decoders registered via [WithValueDecoder] are consulted first (including
+// per element when decoding an ARRAY into a slice of a registered type);
+// [ErrFallthrough] defers to the built-in path, so without options the
+// behavior is unchanged.
+func Decode(gcv spanner.GenericColumnValue, ptr any, opts ...DecodeOption) error {
+	return decode(gcv, ptr, newDecodeConfig(opts))
+}
+
+// decode is the option-threaded core of [Decode].
+func decode(gcv spanner.GenericColumnValue, ptr any, cfg decodeConfig) error {
+	if cfg.valueDecoders != nil {
+		if t := reflect.TypeOf(ptr); t != nil && t.Kind() == reflect.Pointer {
+			if dec, ok := cfg.valueDecoders[t.Elem()]; ok {
+				err := dec(gcv, ptr)
+				if err == nil || !errors.Is(err, ErrFallthrough) {
+					return err
+				}
+				// ErrFallthrough: defer to the built-in path below.
+			} else if t.Elem().Kind() == reflect.Slice && gcv.Type.GetCode() == sppb.TypeCode_ARRAY {
+				if _, ok := cfg.valueDecoders[t.Elem().Elem()]; ok {
+					return decodeCustomSlice(cfg, gcv, reflect.ValueOf(ptr).Elem())
+				}
+			}
+		}
+	}
 	if done, err := decodeExtended(gcv, ptr); done {
 		return err
 	}
 	return gcv.Decode(ptr)
+}
+
+// decodeCustomSlice decodes an ARRAY value element-wise into a slice
+// destination whose element type has a [WithValueDecoder] registration:
+// a SQL NULL ARRAY yields a nil slice, and each element goes through
+// [Decode] again, so per-element [ErrFallthrough] still reaches the
+// built-in decoding.
+func decodeCustomSlice(cfg decodeConfig, gcv spanner.GenericColumnValue, dst reflect.Value) error {
+	if isNullValue(gcv) {
+		dst.SetZero()
+		return nil
+	}
+	lv := gcv.Value.GetListValue()
+	if lv == nil {
+		return fmt.Errorf("spandec: ARRAY value carries %T, not a list value", gcv.Value.GetKind())
+	}
+	elemType := gcv.Type.GetArrayElementType()
+	values := lv.GetValues()
+	out := reflect.MakeSlice(dst.Type(), len(values), len(values))
+	for i, v := range values {
+		egcv := spanner.GenericColumnValue{Type: elemType, Value: v}
+		if err := decode(egcv, out.Index(i).Addr().Interface(), cfg); err != nil {
+			return fmt.Errorf("spandec: element %d: %w", i, err)
+		}
+	}
+	dst.Set(out)
+	return nil
 }
 
 // decodeExtended reports whether ptr is one of the extension shapes, and if
